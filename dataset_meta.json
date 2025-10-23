@@ -1,0 +1,7 @@
+{
+  "n": 100000,
+  "engine_ms": 300,
+  "cp_clamp": 1000,
+  "pgn": null,
+  "seed": 42
+}
