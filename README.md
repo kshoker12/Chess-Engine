@@ -28,7 +28,6 @@ The training data is generated using Stockfish integration for high-quality posi
 - **Position Sampling**: Random positions extracted from real game states
 - **Feature Encoding**: 776-dimensional vectors representing board state
 - **Label Generation**: Stockfish depth-15 evaluations converted to centipawn scores
-```
 
 ### Machine Learning Model
 
