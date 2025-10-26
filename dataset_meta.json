@@ -1,8 +1,12 @@
 {
-  "n": 200108,
+  "n": 1000000,
   "engine_ms": 300,
   "cp_clamp": 1000,
   "pgn": null,
-  "seed": 1761435868,
-  "positions_requested": 10000
+  "seed": 1761455234,
+  "positions_requested": 10000,
+  "n_new": 749892,
+  "source": "kaggle_import",
+  "parquet_file": "train-00001-of-00015.parquet",
+  "max_positions": 1000000
 }
