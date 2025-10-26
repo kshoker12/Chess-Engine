@@ -30,15 +30,18 @@ def main():
     x_scaler = StandardScaler(with_mean=True, with_std=True)
     y_scaler = StandardScaler(with_mean=True, with_std=True)
 
-    params_grid = {
-        "mlp__regressor__hidden_layer_sizes": [ [264, 128, 64, 32, 8]],
-        "mlp__regressor__alpha": [5e-5],
-        "mlp__regressor__learning_rate_init": [3e-3],
-    }
+    # params_grid = {
+    #     "mlp__regressor__hidden_layer_sizes": [ [512, 264, 64, 32]],
+    #     "mlp__regressor__alpha": [5e-5],
+    #     "mlp__regressor__learning_rate_init": [6e-3],
+    # }
 
     base_mlp = MLPRegressor(
         activation="relu",
         solver="adam",
+        hidden_layer_sizes=[512, 264, 64, 32],
+        alpha=5e-5,
+        learning_rate_init=6e-3,
         random_state = args.seed,
         verbose = True,
         early_stopping = True,
@@ -54,21 +57,23 @@ def main():
     ])
 
     # Grid search for best hyperparameters
-    grid_search = GridSearchCV(pipe, params_grid, cv=10, return_train_score=True)
-    grid_search.fit(X_train, y_train)
+    # grid_search = GridSearchCV(pipe, params_grid, cv=10, return_train_score=True)
+    # grid_search.fit(X_train, y_train)
 
-    print("Best parameters set:")
-    print(grid_search.best_params_)
+    # print("Best parameters set:")
+    # print(grid_search.best_params_)
 
-    print("Best score:")
-    print(grid_search.best_score_)
+    # print("Best score:")
+    # print(grid_search.best_score_)
 
-    best_mlp = grid_search.best_estimator_
+    # best_mlp = grid_search.best_estimator_
 
-    best_mlp.fit(X_train, y_train)
+    # best_mlp.fit(X_train, y_train)
+
+    pipe.fit(X_train, y_train)
 
     def eval_split(name, Xs, ys):
-        pred = best_mlp.predict(Xs)
+        pred = pipe.predict(Xs)
         mae = mean_absolute_error(ys, pred)
         r2  = r2_score(ys, pred)
         print(f"{name}: MAE={mae:.1f} cp   R2={r2:.3f}")
@@ -77,17 +82,17 @@ def main():
     print("\n=== Test ===")
     test_mae, test_r2 = eval_split("Test", X_test, y_test)
 
-    joblib.dump(best_mlp, args.out)
+    joblib.dump(pipe, args.out)
     print(f"\nSaved model → {args.out}")
 
     # small manifest for reproducibility
     manifest = {
         "n_train": int(X_train.shape[0]),
         "n_test": int(X_test.shape[0]),
-        "hidden": best_mlp.named_steps['mlp'].regressor_.hidden_layer_sizes,
-        "alpha": best_mlp.named_steps['mlp'].regressor_.alpha,
-        "lr": best_mlp.named_steps['mlp'].regressor_.learning_rate_init,
-        "max_iter": best_mlp.named_steps['mlp'].regressor_.max_iter,
+        "hidden": pipe.named_steps['mlp'].regressor_.hidden_layer_sizes,
+        "alpha": pipe.named_steps['mlp'].regressor_.alpha,
+        "lr": pipe.named_steps['mlp'].regressor_.learning_rate_init,
+        "max_iter": pipe.named_steps['mlp'].regressor_.max_iter,
         "seed": args.seed,
         "test_mae_cp": float(test_mae),
         "test_r2": float(test_r2),

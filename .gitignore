@@ -69,3 +69,12 @@ logs/
 
 # AWS
 .aws/
+
+# Kaggle import script
+kaggle_import.py
+
+# Local requirements for model training (not for Lambda)
+requirements_local.txt
+archives/
+games/
+dataset_meta.json

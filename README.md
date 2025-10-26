@@ -23,20 +23,23 @@ The engine uses a **hybrid evaluation approach** that blends neural network pred
 
 ### Data Generation Pipeline
 
-The training data is generated using Stockfish integration for high-quality position labeling:
+The training data is generated using Stockfish integration and real game analysis for high-quality position labeling:
 
-- **Position Sampling**: Random positions extracted from real game states
-- **Feature Encoding**: 776-dimensional vectors representing board state
+- **Dataset Scale**: 1,000,000+ positions from diverse game sources
+- **Data Sources**: Kaggle datasets + PGN analysis from Grandmaster games
+- **Feature Encoding**: 776-dimensional vectors representing board state (12 pieces × 64 squares + castling, move clocks)
 - **Label Generation**: Stockfish depth-15 evaluations converted to centipawn scores
+- **Game Analysis**: Includes games from Carlsen, Caruana, Nakamura, Fischer, Anand
 
 ### Machine Learning Model
 
-The neural network architecture employs a multi-layer perceptron regressor with sophisticated preprocessing:
+The neural network architecture employs a multi-layer perceptron regressor trained on 1M+ positions:
 
-- **Architecture**: Multi-layer perceptron with configurable hidden layers
+- **Architecture**: MLP with hidden layers [512, 264, 64, 32]
 - **Preprocessing**: StandardScaler for feature normalization
 - **Target Transformation**: TransformedTargetRegressor for centipawn prediction
-- **Optimization**: Grid search hyperparameter tuning with 5-fold cross-validation
+- **Training Data**: 1,000,000 positions with 80/10/10 train/test split
+- **Optimization**: Early stopping, Adam solver, L2 regularization (alpha=5e-5)
 
 ```python
 # ML Pipeline Architecture
@@ -63,18 +66,34 @@ The core engine implements a highly optimized alpha-beta pruning algorithm with 
 - **Null-Move Pruning**: Efficient pruning for non-tactical positions
 - **Late Move Reductions (LMR)**: Reduced search depth for unlikely moves
 - **Quiescence Search**: Tactical stability through capture-only extensions
+- **Blunder Prevention**: Advanced filtering to prevent queen sacrifices and material blunders
+- **Center Control**: Opening phase encouragement for strategic development
 
 #### Move Ordering Heuristics
 - **Killer Move Heuristic**: Prioritize moves that caused beta cutoffs
 - **History Heuristic**: Track move success rates across positions
 - **MVV-LVA Ordering**: Most Valuable Victim - Least Valuable Attacker
+- **Static Exchange Evaluation (SEE)**: Prune obviously bad captures and hanging pieces
+- **Tactical Blunder Filtering**: Prevent queen/rook sacrifices and material losses
 
 #### Hybrid Evaluation Strategy
 ```python
 # Blended evaluation: 80% neural network + 20% classical
 blend = 0.8 + 0.02 * skill_level
 cp = blend * neural_eval + (1.0 - blend) * material_eval
+
+# Enhanced with blunder prevention
+if material_loss < -50:  # Filter obvious blunders
+    prune_move()
 ```
+
+#### Blunder Prevention System
+The engine includes sophisticated tactical safeguards:
+- **Hanging Piece Detection**: Identify pieces moving into unprotected squares
+- **Material Loss Analysis**: 1-ply lookahead to detect worst-case material loss
+- **Static Exchange Evaluation**: Prune bad captures before search
+- **High-Value Piece Protection**: Special handling for Queen/Rook sacrifices
+- **Conservative Filtering**: Only filter moves losing >50 centipawns to preserve legitimate sacrifices
 
 ### Production Optimizations
 
@@ -142,14 +161,18 @@ Content-Type: application/json
 ├── app.py               # FastAPI + Lambda handler
 ├── Dockerfile           # ARM64 Lambda container
 ├── requirements.txt     # Python dependencies
-├── sk_eval.joblib       # Trained neural network model
-└── dataset_*.npy        # Training data arrays
+├── sk_eval.joblib       # Trained neural network model (1M+ positions)
+├── dataset_*.npy        # Training data arrays (1M positions)
+├── games/               # PGN files from top GMs
+└── dataset_meta.json    # Dataset metadata
 ```
 
 ## Key Technical Highlights
 
 ### Innovation Areas
 - **Hybrid AI Architecture**: Combines neural evaluation with classical search algorithms
+- **Large-Scale Training**: 1,000,000+ position dataset from diverse sources
+- **Blunder Prevention**: Advanced tactical safeguards prevent queen sacrifices and material blunders
 - **Serverless Optimization**: Production-grade optimizations for AWS Lambda deployment
 - **Scalable Design**: Efficient handling of cold starts and resource constraints
 - **Professional API**: RESTful design with comprehensive error handling
@@ -159,10 +182,12 @@ Content-Type: application/json
 - **Performance Optimization**: ARM64 native execution with lazy loading
 - **Code Quality**: Modular design with clear separation of concerns
 - **Monitoring**: Health checks and debugging endpoints for operational visibility
+- **Data Quality**: 1M+ positions from real GM games and Stockfish analysis
 
 ### Technical Depth
-- **Advanced Search**: Multi-layered alpha-beta optimizations
-- **Machine Learning**: Custom feature engineering and model training pipeline
+- **Advanced Search**: Multi-layered alpha-beta optimizations with blunder prevention
+- **Machine Learning**: Custom feature engineering on 776-dimensional state encoding
+- **Tactical Safety**: SEE, hanging piece detection, and material loss analysis
 - **Cloud Architecture**: AWS-native deployment with infrastructure as code
 - **DevOps Integration**: Docker-based CI/CD with ECR integration
 
