@@ -1,5 +1,5 @@
 # data_gen.py
-import os, sys, json, random, time
+import os, sys, json, random, time, argparse
 import numpy as np
 from tqdm import tqdm
 import chess
@@ -8,14 +8,13 @@ import chess.engine
 from features import encode_features
 
 # ---------------- Config ----------------
-STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH")  # set this!
+STOCKFISH_PATH = os.environ.get("STOCKFISH_PATH") or "/opt/homebrew/bin/stockfish" # set this!
 OUT_PREFIX = "dataset"          # will write dataset_X.npy, dataset_y.npy
 N_POSITIONS = 100_000
 MAX_PLIES_FROM_START = 80       # randomize phase (open/mid/end)
 SAMPLE_FROM_PGN = None          # e.g., "games.pgn" or leave None
 ENGINE_TIME_MS = 300            # 200–500ms/position works well
 CP_CLAMP = 1000                 # clamp labels to ±1000 cp
-RANDOM_SEED = 42
 
 # ----------------------------------------
 
@@ -44,14 +43,32 @@ def clamp_cp(score: chess.engine.PovScore, turn_white: bool) -> int:
 
 def random_position_from_start() -> chess.Board:
     b = chess.Board()
-    plies = random.randint(6, MAX_PLIES_FROM_START)
+    
+    # Vary the number of plies more intelligently for better diversity
+    # Early game (0-15 plies), mid game (16-40 plies), late game (41+ plies)
+    game_phase = random.choice(['early', 'mid', 'late'])
+    
+    if game_phase == 'early':
+        plies = random.randint(6, 15)
+    elif game_phase == 'mid':
+        plies = random.randint(16, 40)
+    else:  # late
+        plies = random.randint(41, MAX_PLIES_FROM_START)
+    
+    # Add some randomness to avoid overly similar positions
+    plies += random.randint(-2, 2)
+    plies = max(6, min(plies, MAX_PLIES_FROM_START))
+    
     for _ in range(plies):
         if b.is_game_over():
             break
         moves = list(b.legal_moves)
         if not moves:
             break
+        
+        # Random move selection for diverse board positions
         b.push(random.choice(moves))
+    
     return b
 
 def positions_from_pgn(pgn_path: str):
@@ -66,8 +83,17 @@ def positions_from_pgn(pgn_path: str):
                 yield b.copy()
 
 def main():
-    random.seed(RANDOM_SEED)
-    np.random.seed(RANDOM_SEED)
+    parser = argparse.ArgumentParser(description='Generate chess position data')
+    parser.add_argument('--positions', type=int, default=N_POSITIONS, 
+                       help=f'Number of board positions to generate (default: {N_POSITIONS})')
+    args = parser.parse_args()
+    
+    n_positions = args.positions
+    
+    # Use current time for seed to ensure variety
+    seed = int(time.time())
+    random.seed(seed)
+    np.random.seed(seed)
 
     engine = ensure_engine()
     engine.configure({"Threads": 1})  # stability per process
@@ -75,7 +101,22 @@ def main():
 
     X, y = [], []
     seen = set()  # transposition keys for de-dup
-    pbar = tqdm(total=N_POSITIONS, desc="Labeling positions")
+    
+    # Always load existing data if files exist
+    X_file = f"{OUT_PREFIX}_X.npy"
+    y_file = f"{OUT_PREFIX}_y.npy"
+    if os.path.exists(X_file) and os.path.exists(y_file):
+        existing_X = np.load(X_file)
+        existing_y = np.load(y_file)
+        X.extend(existing_X)
+        y.extend(existing_y)
+        print(f"Loaded {len(existing_X)} existing positions")
+    
+    pbar = tqdm(total=n_positions, desc="Labeling positions")
+    
+    # Track how many new positions we need to generate
+    initial_count = len(X)
+    target_count = initial_count + n_positions
 
     def maybe_add(board: chess.Board):
         # Skip trivial terminal or illegal (shouldn't happen)
@@ -105,10 +146,10 @@ def main():
     try:
         if SAMPLE_FROM_PGN:
             for b in positions_from_pgn(SAMPLE_FROM_PGN):
-                if len(X) >= N_POSITIONS: break
+                if len(X) >= target_count: break
                 maybe_add(b)
         # If not enough, top up with random playouts
-        while len(X) < N_POSITIONS:
+        while len(X) < target_count:
             b = random_position_from_start()
             maybe_add(b)
     finally:
@@ -126,11 +167,14 @@ def main():
         "engine_ms": ENGINE_TIME_MS,
         "cp_clamp": CP_CLAMP,
         "pgn": SAMPLE_FROM_PGN,
-        "seed": RANDOM_SEED
+        "seed": seed,
+        "positions_requested": n_positions
     }
     with open(f"{OUT_PREFIX}_meta.json", "w") as f:
         json.dump(meta, f, indent=2)
     print(f"\nSaved {len(X)} samples to {OUT_PREFIX}_X.npy / {OUT_PREFIX}_y.npy")
+    new_positions = len(X) - initial_count
+    print(f"Added {new_positions} new positions")
 
 if __name__ == "__main__":
     main()
