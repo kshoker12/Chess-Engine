@@ -31,9 +31,9 @@ def main():
     y_scaler = StandardScaler(with_mean=True, with_std=True)
 
     params_grid = {
-        "mlp__regressor__hidden_layer_sizes": [[264, 128, 64], [512, 128, 64]],
-        "mlp__regressor__alpha": [1e-5, 3e-5, 5e-5],
-        "mlp__regressor__learning_rate_init": [1e-3, 3e-3, 5e-3],
+        "mlp__regressor__hidden_layer_sizes": [ [264, 128, 64, 32, 8]],
+        "mlp__regressor__alpha": [5e-5],
+        "mlp__regressor__learning_rate_init": [3e-3],
     }
 
     base_mlp = MLPRegressor(
@@ -54,7 +54,7 @@ def main():
     ])
 
     # Grid search for best hyperparameters
-    grid_search = GridSearchCV(pipe, params_grid, cv=5, return_train_score=True)
+    grid_search = GridSearchCV(pipe, params_grid, cv=10, return_train_score=True)
     grid_search.fit(X_train, y_train)
 
     print("Best parameters set:")
