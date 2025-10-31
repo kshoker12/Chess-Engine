@@ -24,6 +24,7 @@ app.add_middleware(
 class MoveRequest(BaseModel):
     fen: str
     max_depth: int = 4
+    difficulty: str = "medium"  # "easy", "medium", "hard"
 
 class MoveResponse(BaseModel):
     best_move: str
@@ -84,7 +85,11 @@ def get_ai_move(req: MoveRequest):
     try:
         # Lazy load engine only when needed
         find_best_move = get_engine()
-        move, score, pv, nodes, depth = find_best_move(req.fen, req.max_depth)
+        move, score, pv, nodes, depth = find_best_move(
+            req.fen, 
+            max_depth=req.max_depth,
+            difficulty=req.difficulty
+        )
         return {"best_move": str(move), "score_cp": int(score)}
     except Exception as e:
         # Fallback to a simple move if engine fails

@@ -7,9 +7,17 @@ import time
 import chess
 
 # Lazy imports - only load when needed
-def _get_eval_model():
-    from eval_model import eval_cp
-    return eval_cp
+def _get_eval_model(use_pytorch=False):
+    """Get the evaluation model (scikit-learn or PyTorch)"""
+    if use_pytorch:
+        print("📦 Loading PyTorch evaluation model...")
+        from pytorch_model import eval_cp as pytorch_eval_cp
+        return pytorch_eval_cp
+    else:
+        print("📦 Loading scikit-learn evaluation model...")
+        from eval_model import eval_cp as sklearn_eval_cp
+        print("✓ Using scikit-learn model (sk_eval.joblib)")
+        return sklearn_eval_cp
 
 def _get_features():
     from features import encode_features
@@ -31,6 +39,8 @@ class EngineConfig:
     pv_max_len: int = 16                 # cap PV length to keep it tidy
     enable_center_control: bool = True   # encourage center play in opening
     enable_blunder_prevention: bool = True  # prevent obvious tactical blunders
+    use_stockfish_eval: bool = False    # use Stockfish for evaluation (slow but accurate)
+    use_pytorch_model: bool = False    # use PyTorch model instead of scikit-learn
 
 # Transposition Table Entry
 class TTEntry:
@@ -346,10 +356,78 @@ def material_eval(board) -> int:
     # score is always from side-to-move perspective
     return s if board.turn == chess.WHITE else -s
 
+# Global Stockfish engine cache
+_stockfish_engine = None
+
+def _get_stockfish_eval(board) -> int:
+    """Get evaluation from Stockfish"""
+    global _stockfish_engine
+    import os
+    from pathlib import Path
+    
+    if _stockfish_engine is None:
+        try:
+            # Import at module level to avoid scoping issues
+            import chess.engine as ce
+            
+            # Try multiple possible Stockfish paths (works in Lambda, local, etc.)
+            possible_paths = [
+                os.getenv('STOCKFISH_PATH', ''),
+                '/usr/local/bin/stockfish',  # Lambda/Docker
+                '/opt/homebrew/bin/stockfish',  # macOS Homebrew
+                '/usr/bin/stockfish',  # Linux
+                'stockfish'  # System PATH
+            ]
+            
+            stockfish_path = None
+            for path in possible_paths:
+                if path and Path(path).exists():
+                    stockfish_path = path
+                    break
+            
+            if stockfish_path is None:
+                # Try if stockfish is in PATH
+                stockfish_path = 'stockfish'
+            
+            _stockfish_engine = ce.SimpleEngine.popen_uci(stockfish_path)
+            print(f"✓ Initialized Stockfish at {stockfish_path}")
+        except Exception as e:
+            print(f"Warning: Could not initialize Stockfish: {e}")
+            print("Falling back to material evaluation only")
+            _stockfish_engine = None
+    
+    if _stockfish_engine is None:
+        # Fallback to material eval if Stockfish not available
+        return material_eval(board)
+    
+    try:
+        # Get evaluation from Stockfish - use the cached import
+        import chess.engine as ce
+        info = _stockfish_engine.analyse(board, ce.Limit(depth=8))
+        score = info["score"].white()
+        
+        if score.is_mate():
+            # Convert mate to large score
+            return INF - 100 if score.mate() > 0 else -INF + 100
+        else:
+            # Convert centipawns
+            cp = score.score()
+            # Flip perspective if it's black to move
+            if board.turn == chess.BLACK:
+                cp = -cp
+            return cp
+    except Exception as e:
+        print(f"Stockfish evaluation error: {e}")
+        return material_eval(board)
+
 def static_eval(board, cfg: EngineConfig) -> int:
-    # blend NN eval with material for stability
+    # Use Stockfish evaluation if enabled
+    if cfg.use_stockfish_eval:
+        return _get_stockfish_eval(board)
+    
+    # Neural network evaluation (scikit-learn or PyTorch)
     encode_features = _get_features()
-    eval_cp = _get_eval_model()
+    eval_cp = _get_eval_model(use_pytorch=cfg.use_pytorch_model)
     
     f = encode_features(board)
     ml = eval_cp(f)
@@ -657,6 +735,14 @@ class Search:
 
     def search(self, board) -> Tuple[str, int, List[str], int, int]:
         """Iterative deepening driver with aspiration windows. Returns (bestMoveUci, scoreCp, pvUci[], nodes, depthReached)"""
+        # Log which evaluation model is being used with difficulty level
+        if self.cfg.use_stockfish_eval:
+            print("🎯 Difficulty: HARD - Using Stockfish for evaluation")
+        elif self.cfg.use_pytorch_model:
+            print("🧠 Difficulty: EASY - Using PyTorch neural network for evaluation")
+        else:
+            print("🤖 Difficulty: MEDIUM - Using scikit-learn neural network for evaluation")
+        
         self.start_time = time.time()
         self.stop = False
         self.nodes = 0
@@ -730,11 +816,38 @@ Find the best move for a given FEN string
         - time_taken_ms: The time taken in milliseconds
 """
 def find_best_move(fen: str, 
-                    max_depth: int = 5, 
-                    time_budget_ms: int = 900,
+                    max_depth: int = 8, 
+                    time_budget_ms: int = 1500,
                     node_limit: int = 150_000,
-                    skill_level: int = 10
+                    skill_level: int = 10,
+                    difficulty: str = "medium"
                 ) -> Tuple[str, int, List[str], int, int]:
+    """
+    Find the best move for a chess position.
+    
+    Args:
+        fen: FEN string of the chess position
+        max_depth: Maximum search depth
+        time_budget_ms: Time budget in milliseconds
+        node_limit: Maximum number of nodes to search
+        skill_level: Skill level (1-10, affects search parameters)
+        difficulty: "easy" (PyTorch), "medium" (scikit-learn), "hard" (Stockfish)
+    
+    Returns:
+        tuple: (best_move, score_cp, pv, nodes, depth_reached)
+    """
+    # Map difficulty to evaluation model
+    difficulty = difficulty.lower()
+    if difficulty == "easy":
+        use_pytorch = True
+        use_stockfish = False
+    elif difficulty == "hard":
+        use_pytorch = False
+        use_stockfish = True
+    else:  # "medium" or default
+        use_pytorch = False
+        use_stockfish = False
+    
     # Map skill -> Config knobs (simple presets)
     blend = 0.8 + 0.02 * min(max(skill_level, 1), 10)  # Higher model weight
     cfg = EngineConfig(
@@ -747,6 +860,8 @@ def find_best_move(fen: str,
         null_move_R = 2,
         lmr_min_depth = 3, 
         lmr_move_idx_threshold = 3 if skill_level >= 7 else 5,
+        use_pytorch_model=use_pytorch,
+        use_stockfish_eval=use_stockfish
     )
     board = chess.Board(fen)
     engine = Search(cfg)
