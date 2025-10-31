@@ -5,7 +5,7 @@
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-green.svg)
 ![Docker](https://img.shields.io/badge/Docker-Container-blue.svg)
 
-A production-grade chess engine combining neural network evaluation with classical alpha-beta search algorithms, deployed as a serverless API on AWS Lambda with architecture optimization.
+A production-grade chess engine with **three evaluation models** (PyTorch, scikit-learn, Stockfish) combined with classical alpha-beta search algorithms, deployed as a serverless API on AWS Lambda with architecture optimization.
 
 ## Architecture Overview
 
@@ -31,15 +31,42 @@ The training data is generated using Stockfish integration and real game analysi
 - **Label Generation**: Stockfish depth-15 evaluations converted to centipawn scores
 - **Game Analysis**: Includes games from Carlsen, Caruana, Nakamura, Fischer, Anand
 
-### Machine Learning Model
+### Evaluation Models
 
-The neural network architecture employs a multi-layer perceptron regressor trained on 1M+ positions:
+The engine supports **three evaluation models** selectable via the `difficulty` parameter:
 
+#### 1. Easy Mode - PyTorch Neural Network
+- **Framework**: PyTorch with batch normalization and dropout
+- **Architecture**: MLP with hidden layers [512, 264, 64, 32]
+- **Features**: GPU acceleration support, flexible training
+- **Speed**: Fastest inference
+- **Use Case**: Quick games, rapid responses
+
+#### 2. Medium Mode - scikit-learn Neural Network (Default)
+- **Framework**: scikit-learn MLPRegressor
 - **Architecture**: MLP with hidden layers [512, 264, 64, 32]
 - **Preprocessing**: StandardScaler for feature normalization
 - **Target Transformation**: TransformedTargetRegressor for centipawn prediction
 - **Training Data**: 1,000,000 positions with 80/10/10 train/test split
 - **Optimization**: Early stopping, Adam solver, L2 regularization (alpha=5e-5)
+- **Speed**: Medium, balanced performance
+- **Use Case**: Production default, balanced accuracy/speed
+
+#### 3. Hard Mode - Stockfish Engine
+- **Engine**: Stockfish 16 compiled from source
+- **Evaluation**: Direct engine analysis (depth 8)
+- **Speed**: Slowest but most accurate
+- **Use Case**: Best move analysis, critical positions
+
+**Model Selection:**
+```python
+# All models use the same 776-dimensional input features
+find_best_move(fen, difficulty="easy")    # PyTorch
+find_best_move(fen, difficulty="medium")  # scikit-learn (default)
+find_best_move(fen, difficulty="hard")    # Stockfish
+```
+
+
 
 ```python
 # ML Pipeline Architecture
@@ -106,6 +133,7 @@ The engine includes sophisticated tactical safeguards:
 #### Performance Enhancements
 - **Containerized Deployment**: Docker-based dependency management
 - **Legacy Docker Builder**: Ensures Lambda-compatible manifest format
+- **Model Flexibility**: Three evaluation models with automatic fallback mechanisms
 - **Resource Optimization**: Memory and timeout tuning for serverless constraints
 
 ## AWS Deployment Architecture
@@ -140,7 +168,8 @@ Content-Type: application/json
 
 {
   "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-  "max_depth": 4
+  "max_depth": 4,
+  "difficulty": "medium"
 }
 
 # Response:
@@ -150,18 +179,26 @@ Content-Type: application/json
 }
 ```
 
+**Difficulty Levels:**
+- **`easy`**: Uses PyTorch neural network (fastest, good for quick games)
+- **`medium`**: Uses scikit-learn model (balanced, recommended default)
+- **`hard`**: Uses Stockfish evaluation (most accurate, slowest)
+
 ## Project Structure
 
 ```
 ├── data_gen.py          # Stockfish-based dataset generation
 ├── features.py          # 776-dim feature encoding
-├── train_eval.py        # ML model training pipeline
-├── eval_model.py        # Lazy-loaded model inference
+├── train_eval.py        # ML model training pipeline (scikit-learn)
+├── train_pytorch.py     # PyTorch model training
+├── pytorch_model.py     # PyTorch model inference
+├── eval_model.py        # Lazy-loaded scikit-learn model
 ├── engine.py            # Alpha-beta search with optimizations
 ├── app.py               # FastAPI + Lambda handler
 ├── Dockerfile           # ARM64 Lambda container
 ├── requirements.txt     # Python dependencies
-├── sk_eval.joblib       # Trained neural network model (1M+ positions)
+├── sk_eval.joblib       # scikit-learn model (medium)
+├── chess_eval_pytorch.pt # PyTorch model (easy)
 ├── dataset_*.npy        # Training data arrays (1M positions)
 ├── games/               # PGN files from top GMs
 └── dataset_meta.json    # Dataset metadata
@@ -170,9 +207,11 @@ Content-Type: application/json
 ## Key Technical Highlights
 
 ### Innovation Areas
+- **Triple-Model Architecture**: PyTorch, scikit-learn, and Stockfish evaluation models with seamless switching
 - **Hybrid AI Architecture**: Combines neural evaluation with classical search algorithms
 - **Large-Scale Training**: 1,000,000+ position dataset from diverse sources
 - **Blunder Prevention**: Advanced tactical safeguards prevent queen sacrifices and material blunders
+- **Model Flexibility**: Difficulty-based model selection with automatic fallback mechanisms
 - **Serverless Optimization**: Production-grade optimizations for AWS Lambda deployment
 - **Scalable Design**: Efficient handling of cold starts and resource constraints
 - **Professional API**: RESTful design with comprehensive error handling
@@ -186,10 +225,12 @@ Content-Type: application/json
 
 ### Technical Depth
 - **Advanced Search**: Multi-layered alpha-beta optimizations with blunder prevention
+- **Multiple ML Models**: PyTorch, scikit-learn, and Stockfish evaluation engines
 - **Machine Learning**: Custom feature engineering on 776-dimensional state encoding
+- **Model Swapping**: Runtime model selection via difficulty parameter
 - **Tactical Safety**: SEE, hanging piece detection, and material loss analysis
-- **Cloud Architecture**: AWS-native deployment with infrastructure as code
-- **DevOps Integration**: Docker-based CI/CD with ECR integration
+- **Cloud Architecture**: AWS-native deployment with multi-stage Docker builds
+- **DevOps Integration**: Docker-based CI/CD with ECR integration and ARM64 optimization
 
 ## Usage
 
@@ -198,19 +239,43 @@ Content-Type: application/json
 # Install dependencies
 pip install -r requirements.txt
 
+# Optional: Install PyTorch for PyTorch model support
+pip install torch
+
 # Run FastAPI server
 uvicorn app:app --reload
 
-# Test endpoints
+# Test endpoints with difficulty levels
 curl -X POST "http://localhost:8000/v1/api/move" \
      -H "Content-Type: application/json" \
-     -d '{"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"}'
+     -d '{"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "difficulty": "medium"}'
+
+# Test different difficulty levels
+curl -X POST "http://localhost:8000/v1/api/move" \
+     -H "Content-Type: application/json" \
+     -d '{"fen": "...", "difficulty": "easy"}'   # PyTorch
+curl -X POST "http://localhost:8000/v1/api/move" \
+     -H "Content-Type: application/json" \
+     -d '{"fen": "...", "difficulty": "medium"}'  # scikit-learn (default)
+curl -X POST "http://localhost:8000/v1/api/move" \
+     -H "Content-Type: application/json" \
+     -d '{"fen": "...", "difficulty": "hard"}'    # Stockfish
 ```
 
 ### AWS Deployment
+
+The Dockerfile includes all three models:
+
 ```bash
-# Build ARM64 container
+# Build ARM64 container (includes Stockfish compilation from source)
 docker build --platform linux/arm64 -t chess-ai-engine .
+
+# The build process:
+# 1. Builder stage: Compiles Stockfish 16 from source on Amazon Linux 2023
+# 2. Final stage: Copies Stockfish binary and includes:
+#    - sk_eval.joblib (medium difficulty)
+#    - chess_eval_pytorch.pt (easy difficulty - optional)
+#    - /usr/local/bin/stockfish (hard difficulty)
 
 # Push to ECR
 docker push <account>.dkr.ecr.<region>.amazonaws.com/chess-ai-backend:latest
@@ -220,6 +285,11 @@ aws lambda update-function-code \
   --function-name chess-ai-engine \
   --image-uri <account>.dkr.ecr.<region>.amazonaws.com/chess-ai-backend:latest
 ```
+
+**Fallback Behavior:**
+- If PyTorch model missing → falls back to scikit-learn
+- If Stockfish not found → falls back to scikit-learn
+- Ensures engine always has at least one working model
 
 ---
 

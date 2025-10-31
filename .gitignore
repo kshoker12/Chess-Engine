@@ -78,3 +78,4 @@ requirements_local.txt
 archives/
 games/
 dataset_meta.json
+USAGE.md

@@ -1,5 +1,7 @@
 {
-  "n": 782809,
-  "source": "games/Vishwanathan Anand-black.pgn",
-  "note": "PGN positions without evaluations (CP=0 placeholder)"
+  "n": 58876,
+  "source": "games/Bobby Fischer-white.pgn",
+  "note": "PGN positions evaluated with Stockfish",
+  "engine_ms": 300,
+  "cp_clamp": 1000
 }
