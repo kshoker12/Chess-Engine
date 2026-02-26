@@ -1,0 +1,33 @@
+# Exclude checkpoints directories (huge and not needed for inference)
+policy_transformer/checkpoints/
+value_transformer/checkpoints/
+
+# Exclude Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.Python
+
+# Exclude virtual environment
+venv/
+env/
+ENV/
+
+# Exclude data directories (not needed for inference)
+data/
+
+# Exclude development files
+*.ipynb
+*.md
+.git/
+.gitignore
+
+# Exclude old Dockerfile
+Dockerfile.old
+
+# Exclude training/evaluation scripts (not needed for inference)
+**/train.py
+**/retrain.py
+**/compare_models.py
+**/evaluate_accuracy.py

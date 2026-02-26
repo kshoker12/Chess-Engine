@@ -1,0 +1,6 @@
+pyarrow==18.1.0
+fastparquet==2024.11.0
+pandas==2.2.3
+kagglehub==0.2.6
+xgboost==3.1.1
+
