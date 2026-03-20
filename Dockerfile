@@ -56,7 +56,7 @@ COPY policy_transformer/ ./policy_transformer/
 COPY value_transformer/ ./value_transformer/
 
 # Verify model file exists (the 4o1 model that handler.py loads)
-RUN test -f value_transformer/mini_value_4o1.pt || echo "WARNING: Model file not found"
+RUN test -f value_transformer/mini_value_6o4.pt || echo "WARNING: Model file not found"
 
 # Set Python path to include working directory
 ENV PYTHONPATH=/app
