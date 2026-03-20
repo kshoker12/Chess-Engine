@@ -9,11 +9,11 @@ from model import ChessFormer
 import random
 
 # ------------------- FINE-TUNE SETTINGS -------------------
-CHECKPOINT_PATH = "/kaggle/input/latest-value-ft3/mini_value_2o6.pt"
-FREEZE_LAYERS = 3
+CHECKPOINT_PATH = "/kaggle/input/datasets/karandeepshoker/mini-value-ft2/mini_value_5o9.pt"
+FREEZE_LAYERS = 0
 
 # ------------------- HYPERPARAMETERS -------------------
-batch_size = 4096
+batch_size = 2048
 gradient_accumulation_steps = 1
 block_size = 64
 n_embed = 384
@@ -23,7 +23,7 @@ dropout = 0.1
 max_iters = 10000 
 eval_interval = 500
 save_interval = 1000
-learning_rate = 2e-5
+learning_rate = 1e-4
 warmup_iters = 1000
 lr_decay_iters = max_iters
 min_lr = learning_rate / 10
@@ -51,11 +51,11 @@ def load_to_ram(x_path, y_path, name):
     return TensorDataset(x_tensor, y_tensor)
 
 # Paths
-OLD_X_PATH = "/kaggle/input/training-data/dataset_X_final.npy"
-OLD_Y_PATH = "/kaggle/input/training-data/dataset_Y_final.npy"
+OLD_X_PATH = "/kaggle/input/datasets/karandeepshoker/training-data2/dataset_X_mega.npy"
+OLD_Y_PATH = "/kaggle/input/datasets/karandeepshoker/training-data2/dataset_Y_mega.npy"
 # 'New' now refers to the self-play dataset we want to mix in 50:50
-NEW_X_PATH = "/kaggle/input/training-data/dataset_X_sp.npy"
-NEW_Y_PATH = "/kaggle/input/training-data/dataset_Y_sp.npy"
+NEW_X_PATH = "/kaggle/input/datasets/karandeepshoker/training-data2/dataset_X_sp.npy"
+NEW_Y_PATH = "/kaggle/input/datasets/karandeepshoker/training-data2/dataset_Y_sp.npy"
 
 ds_old = load_to_ram(OLD_X_PATH, OLD_Y_PATH, "Old")
 ds_new = load_to_ram(NEW_X_PATH, NEW_Y_PATH, "New")
@@ -66,7 +66,7 @@ class FastInfiniteLoader:
         self.old_x, self.old_y = ds_old.tensors
         self.new_x, self.new_y = ds_new.tensors
         self.batch_size = batch_size
-        self.half_size = batch_size // 2
+        self.half_size = batch_size - batch_size // 6
         print(f"FastInfiniteLoader initialized. Batch size: {batch_size} (50% Old / 50% New)")
 
     def __iter__(self):
@@ -120,7 +120,7 @@ if FREEZE_LAYERS > 0:
 
 optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=weight_decay)
 scaler = torch.amp.GradScaler(enabled=use_amp)
-criterion = nn.SmoothL1Loss(beta=1.0)
+criterion = nn.MSELoss()
 
 # ------------------- TRAINING LOOP -------------------
 def get_lr(it):
@@ -184,4 +184,4 @@ for iter_num in pbar:
             no_improve_count += 1
         if no_improve_count >= early_stop_patience: break
 
-torch.save(model.state_dict(), "mini_value_3o1.pt")
+torch.save(model.state_dict(), "mini_value_6o1.pt")

@@ -233,11 +233,11 @@ def compare_models(pgn_file, model_path_a, model_path_b, num_samples=1000):
 if __name__ == "__main__":
     random.seed(567)
     ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    pgn_path = os.path.join(ROOT_DIR, "games", "lichess_elite_2025-09.pgn")
+    pgn_path = os.path.join(ROOT_DIR, "data", "games", "lichess_elite_2025-09.pgn")
     
     # Update checkpoit names as needed
-    path_a = os.path.join(ROOT_DIR, "value_transformer", "checkpoints", "mini_value_2o2.pt")
-    path_b = os.path.join(ROOT_DIR, "value_transformer", "checkpoints", "mini_value_3o8.pt")
+    path_a = os.path.join(ROOT_DIR, "value_transformer", "mini_value_6o4.pt")
+    path_b = os.path.join(ROOT_DIR, "value_transformer", "checkpoints", "mini_value_2o2.pt")
     
     if os.path.exists(pgn_path) and os.path.exists(path_a) and os.path.exists(path_b):
         compare_models(pgn_path, path_a, path_b)

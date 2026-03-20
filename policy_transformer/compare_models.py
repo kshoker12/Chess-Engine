@@ -51,21 +51,36 @@ def get_stockfish_best_move(board, time_limit=0.1):
 
 def load_model(checkpoint_path, vocab_size):
     print(f"Loading model from {checkpoint_path}...")
-    model = PolicyHead(
-        vocab_size=vocab_size,
-        n_embd=N_EMBD,
-        block_size=BLOCK_SIZE,
-        n_head=N_HEAD,
-        n_layer=N_LAYER,
-        dropout=DROPOUT,
-        device=DEVICE
-    )
+    if 'mega' in checkpoint_path:
+        model = PolicyHead(
+            vocab_size=vocab_size,
+            n_embd=N_EMBD,
+            block_size=BLOCK_SIZE,
+            n_head=N_HEAD,
+            n_layer=N_LAYER,
+            dropout=DROPOUT,
+            device=DEVICE
+        )
+    else: 
+        model = PolicyHead(
+            vocab_size=vocab_size,
+            n_embd=500,
+            block_size=128,
+            n_head=10,
+            n_layer=8,
+            dropout=DROPOUT,
+            device=DEVICE
+        )
 
     checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
     if isinstance(checkpoint, dict) and 'model' in checkpoint:
-        model.load_state_dict(checkpoint['model'])
+        state_dict = checkpoint['model']
     else:
-        model.load_state_dict(checkpoint)
+        state_dict = checkpoint
+    # Strip _orig_mod. prefix if checkpoint was saved from torch.compile() model
+    if isinstance(state_dict, dict) and any(k.startswith('_orig_mod.') for k in state_dict):
+        state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
         
     model.to(DEVICE)
     model.eval()
@@ -101,7 +116,7 @@ def predict_with_model(model, pgn_str, board, vocab, stoi, k=1):
             uci = infer_module.mirror_uci_string(uci)
             
         token = infer_module.get_token(uci)
-        token_ids.append(stoi.get(token, stoi.get("[UNK]", 0)))
+        token_ids.append(stoi.get(token, stoi.get("|", 0)))
         temp_board.push(move)
         
     # 3. Model Inference
@@ -142,7 +157,7 @@ def predict_with_model(model, pgn_str, board, vocab, stoi, k=1):
 
 def compare_models(pgn_file, model_path_a, model_path_b, num_samples=1000):
     # Load Vocab
-    vocab_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vocab1.pkl")
+    vocab_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy_transformer", "vocab.pkl")
     with open(vocab_path, 'rb') as f:
         vocab = pickle.load(f)
     stoi = vocab
@@ -207,7 +222,7 @@ def compare_models(pgn_file, model_path_a, model_path_b, num_samples=1000):
             if len(moves) < 7: continue
             
             # Sample position
-            k = random.randint(5, len(moves) - 1)
+            k = random.randint(max(5, len(moves) - 15), len(moves) - 1)
             
             # Reconstruct PGN str and Board
             board = game.board()
@@ -261,11 +276,11 @@ def compare_models(pgn_file, model_path_a, model_path_b, num_samples=1000):
 
 if __name__ == "__main__":
     ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    pgn_path = os.path.join(ROOT_DIR, "weaker", "lichess_db_standard_rated_2013-09.pgn")
+    pgn_path = os.path.join(ROOT_DIR, "data", "weaker", "lichess_db_standard_rated_2013-09.pgn")
     
-    model_dir = os.path.join(os.path.dirname(__file__), "checkpoints")
-    path_a = os.path.join(model_dir, "mega_ultra_3o3.pt")
-    path_b = os.path.join(model_dir, "mega_ultra_5o2.pt")
+    model_dir = os.path.join(os.path.dirname(__file__))
+    path_a = os.path.join(model_dir, "ultra_2o5.pt")
+    path_b = os.path.join(model_dir, "checkpoints", "ultra_3o9.pt")
     
     if os.path.exists(pgn_path) and os.path.exists(path_a) and os.path.exists(path_b):
         compare_models(pgn_path, path_a, path_b)

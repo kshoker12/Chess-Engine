@@ -26,17 +26,42 @@ class MCTSNode:
         self.P = 0.0
 
 class MCTS:
-    def __init__(self, pgn, value_func, policy_func, num_simulations: int = 150, c_punc: float = 1.00):
+    def __init__(self, pgn, value_func, policy_func, num_simulations: int = 400, c_punc: float = 1.10):
         # Build PGN once for the root board at construction time
         self._init_root(pgn)
         self.num_simulations = num_simulations
         self.c_punc = c_punc
         self.value_func = value_func
         self.policy_func = policy_func
-        self.k = 12
-        self.tau = 8
+        self.k = 10
+        self.tau = 1.0
         self.global_eval = 0
-        self.global_expansions = 0 
+        self.global_expansions = 0
+
+        # Draw-avoidance: cache root FEN and last few (state, action) pairs
+        self.root_fen, self.recent_pairs = self._extract_recent_state_action_pairs(pgn)
+
+    def _extract_recent_state_action_pairs(self, pgn, max_pairs: int = 4):
+        try:
+            pgn_io = io.StringIO(pgn)
+            game = chess.pgn.read_game(pgn_io)  
+        except Exception:
+            game = None
+
+        if game is None:
+            board = chess.Board()
+            return board.fen(), []
+
+        board = game.board()
+        recent = []
+        for move in game.mainline_moves():
+            fen_before = board.fen()
+            recent.append((fen_before, move.uci()))
+            board.push(move)
+
+        root_fen = board.fen()
+        recent_pairs = recent[-max_pairs:] if len(recent) > max_pairs else recent
+        return root_fen, recent_pairs
 
     def _init_root(self, pgn):
         pgn_io = io.StringIO(pgn)
@@ -49,12 +74,6 @@ class MCTS:
 
     def search(self):
         for i in range(self.num_simulations):
-            if i == 1:
-                self.k = 7
-                self.tau = 4.0
-            if i == self.num_simulations // 10:
-                self.tau = 2.5
-                self.k = 5
             node = self._select(self.root)
             value = self._evaluate(node)
             if i < self.num_simulations - 1 and not node.board.is_game_over():
@@ -66,6 +85,8 @@ class MCTS:
         logs = []
         for key, child in self.root.children.items():
             score = child.N
+            if (self.root_fen, key) in self.recent_pairs:
+                score *= 0.95
             logs.append((key, score, child.W / child.N if child.N > 0 else child.W, child.P))
             if score > best_score:
                 best_score = score
@@ -136,7 +157,7 @@ class MCTS:
     def _evaluate(self, node: MCTSNode):
         self.global_eval += 1
         if node.board.is_game_over():
-            return 1.02 if node.board.is_checkmate() else 0
+            return 1.03 if node.board.is_checkmate() else 0
         return node.W
 
     def _backpropagate(self, node: MCTSNode, value: float):

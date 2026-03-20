@@ -118,16 +118,17 @@ def predict_top_k_custom(pgn_str, board, k=3):
     # Return top K move strings
     return [c[1] for c in candidates[:k]]
 
-def evaluate_accuracy(pgn_file, num_samples=1000):
+def evaluate_accuracy(pgn_file, num_samples=10_000):
     print(f"Loading games from {pgn_file}...")
-    print(f"Goal: {num_samples} random samples (1 per game)")
+    print(f"Goal: {num_samples} random samples (tracking top-1, top-3, top-5, top-7 accuracy)")
     
-    matches = 0
-    top7_matches = 0 # Top-7 Recall
+    matches_top1 = 0
+    matches_top3 = 0
+    matches_top5 = 0
+    matches_top7 = 0
     total = 0
     
     with open(pgn_file) as f:
-        # Use tqdm to track progress
         pbar = tqdm(total=num_samples, desc="Evaluating")
         
         while total < num_samples:
@@ -144,91 +145,65 @@ def evaluate_accuracy(pgn_file, num_samples=1000):
             if not moves:
                 continue
                 
-            # Random Sampling: Pick ONE random split point in this game
-            # We want to predict the move at index `k`.
-            
-            # Constraint: We need some history for the Transformer to have context.
             if len(moves) < 7:
-                 continue
+                continue
 
             k = random.randint(5, len(moves) - 1)
-            if k < 0: continue 
+            if k < 0:
+                continue
 
-            # Replay to point k
             board = game.board()
-            
-            # Efficient replay with SAN generation
             pgn_parts = []
-            
             for i in range(k):
                 move = moves[i]
-                
-                # Generate SAN before pushing
                 move_san = board.san(move)
                 board.push(move)
-                
                 if i % 2 == 0:
                     move_num = (i // 2) + 1
                     pgn_parts.append(f"{move_num}. {move_san}")
                 else:
                     pgn_parts.append(f"{move_san}")
-            
             pgn_str = " ".join(pgn_parts)
-            
-            # 1. Ground Truth (Stockfish) on current board
+
             gf_move = get_stockfish_best_move(board)
-            
             if not gf_move:
                 continue
-            
-            # 2. Prediction (Using Custom Logic)
-            try:
-                # Get Top 7 candidates from Transformer directly
-                candidates = predict_top_k_custom(pgn_str, board, k=9)
-                pred_move = candidates[0] if candidates else None
-                
-                # DEBUG: Print details for first few samples to diagnose
-                if total < 5:
-                    print(f"\n--- Sample {total+1} ---")
-                    print(f"PGN: {pgn_str}")
-                    print(f"Turn: {'Black' if board.turn == chess.BLACK else 'White'}")
-                    print(f"Stockfish: {gf_move}")
-                    print(f"Candidates (Top 7): {candidates}")
-                    if candidates and gf_move in candidates:
-                         print("MATCH FOUND in Top 7")
-                    else:
-                         print("NO MATCH in Top 7")
-                    print("----------------------")
 
+            try:
+                candidates = predict_top_k_custom(pgn_str, board, k=7)
             except Exception as e:
                 print(f"Error making prediction: {e}")
-                pred_move = None
                 candidates = []
-                
-            # 3. Compare
-            is_match = (pred_move == gf_move)
-            if is_match:
-                matches += 1
-                
-            if gf_move in candidates:
-                top7_matches += 1
-            
+
+            if candidates and candidates[0] == gf_move:
+                matches_top1 += 1
+            if gf_move in candidates[:3]:
+                matches_top3 += 1
+            if gf_move in candidates[:5]:
+                matches_top5 += 1
+            if gf_move in candidates[:7]:
+                matches_top7 += 1
+
             total += 1
             pbar.update(1)
             pbar.set_postfix({
-                "Top-1": f"{matches/total:.2%}",
-                "Top-7": f"{top7_matches/total:.2%}"
+                "Top-1": f"{matches_top1/total:.2%}",
+                "Top-3": f"{matches_top3/total:.2%}",
+                "Top-5": f"{matches_top5/total:.2%}",
+                "Top-7": f"{matches_top7/total:.2%}",
             })
-            
+
     print(f"\nFinal Results ({total} samples):")
-    print(f"Top-1 Accuracy: {matches}/{total} ({matches/total*100:.2f}%)")
-    print(f"Top-7 Recall:   {top7_matches}/{total} ({top7_matches/total*100:.2f}%)")
+    print(f"Top-1 Accuracy: {matches_top1}/{total} ({100*matches_top1/total:.2f}%)")
+    print(f"Top-3 Accuracy: {matches_top3}/{total} ({100*matches_top3/total:.2f}%)")
+    print(f"Top-5 Accuracy: {matches_top5}/{total} ({100*matches_top5/total:.2f}%)")
+    print(f"Top-7 Accuracy: {matches_top7}/{total} ({100*matches_top7/total:.2f}%)")
 
 if __name__ == "__main__":
     random.seed(123) 
     ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    pgn_path = os.path.join(ROOT_DIR, "weaker", "lichess_db_standard_rated_2013-09.pgn")
+    pgn_path = os.path.join(ROOT_DIR, "data", "weaker", "lichess_db_standard_rated_2013-09.pgn")
     if not os.path.exists(pgn_path):
         print(f"PGN not found: {pgn_path}")
     else:
-        evaluate_accuracy(pgn_path, num_samples=1000)
+        evaluate_accuracy(pgn_path, num_samples=10000)

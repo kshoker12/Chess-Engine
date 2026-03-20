@@ -1,179 +1,133 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.nn import functional as F
 import math
 import os
-from tqdm import tqdm
 import pickle
-import glob
-import numpy as np  # Added numpy for memory efficiency
-from model import ChessFormer
+import time
+from tqdm import tqdm
+from torch.amp import autocast, GradScaler   # Updated import (non-deprecated)
+from model import PolicyHead
+import gc
 
-# ------------------- HYPERPARAMETERS -------------------
-# OPTIMIZED FOR 16GB VRAM (Kaggle/Colab) & 8GB RAM
-batch_size = 32          # Reduced from 96 to save VRAM
-gradient_accumulation_steps = 8  # Increased to maintain effective batch size ~256
-block_size = 256
-n_embd = 768
-n_head = 12
-n_layer = 10
-dropout = 0.1
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+os.environ['TORCH_USE_CUDA_DSA'] = '1'
 
-max_iters = 10000
-eval_interval = 500
-save_interval = 500
-learning_rate = 3e-4
-warmup_iters = 1000
-lr_decay_iters = max_iters
+# ──────────────────────────────────────────────────────────────
+# Hyperparameters
+# ──────────────────────────────────────────────────────────────
+batch_size = 475
+grad_accum = 1              # effective batch size = 32 × 8 = 256
+block_size = 128
+max_iters = 100001
+run_iters = 10000
+eval_interval = 1000
+save_interval = 1000
+learning_rate = 1e-5
 min_lr = learning_rate / 10
-weight_decay = 0.01
-grad_clip = 1.0
+warmup_iters = 1000
+lr_decay_iters = 100000
+n_embd = 500
+n_head = 10
+n_layer = 8
+dropout = 0.1
+vocab_size = 4033
+checkpoint_path = 'ultra_3o8.pt'
+eval_iters = 50
+weight_decay = 1e-4
 
-if torch.cuda.is_available():
-    device = 'cuda'
-elif torch.backends.mps.is_available():
-    device = 'mps' 
-else:
-    device = 'cpu'
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+scaler = GradScaler(enabled=(device.type == 'cuda'))
 
-use_amp = True if device == 'cuda' else False
-print(f"Using device: {device} | AMP: {use_amp}")
+with open('vocab1.pkl', 'rb') as f:
+    stoi = pickle.load(f)
+itos = {i: s for s, i in stoi.items()}
+pad_id = stoi["|"]
 
-# ------------------- DATA LOADING -------------------
-class ChessDataset(Dataset):
-    def __init__(self, data_path, vocab_path, block_size):
-        with open(vocab_path, 'rb') as f:
-            self.vocab = pickle.load(f)
-        self.vocab_size = len(self.vocab)
-        self.stoi = self.vocab
-        self.itos = {i: s for s, i in self.vocab.items()}
-        
-        print(f"Loading games from {data_path}...")
-        
-        # Optimize: Use intermediate lists but convert to numpy immediately
-        data_ids = []
-        target_ids = []
-        
-        # To avoid massive RAM usage reading file lines, we process line by line
-        # and append to a list, then compact to numpy.
-        with open(data_path, 'r') as f:
-            for line in tqdm(f, desc="Processing text"):
-                line = line.strip()
-                if not line: continue
-                
-                tokens = line.split()
-                if not tokens: continue
-                
-                ids = [self.stoi.get(t, self.stoi.get("[UNK]", 0)) for t in tokens]
-                
-                # --- LOGIC PRESERVED FROM YOUR SCRIPT ---
-                first_token_str = self.itos.get(ids[0], "")
-                is_black_start = False
-                if len(first_token_str) >= 2 and first_token_str[1].isdigit():
-                    rank = int(first_token_str[1])
-                    if rank >= 5:
-                        is_black_start = True
-                
-                curr_targets = []
-                for i, token_id in enumerate(ids):
-                    if is_black_start:
-                        if i % 2 != 0:
-                            curr_targets.append(token_id) 
-                        else:
-                            curr_targets.append(-100) 
-                    else:
-                        if i % 2 == 0:
-                            curr_targets.append(token_id)
-                        else:
-                            curr_targets.append(-100) 
-                # ----------------------------------------
+# ──────────────────────────────────────────────────────────────
+# Data loading (unchanged except pin_memory for faster transfer)
+# ──────────────────────────────────────────────────────────────
+def load_and_split(train_ratio=0.9, x_file = "full_X.pt", y_file = "full_Y.pt"):
+    print("Loading preprocessed data...")
+    full_X = torch.load(x_file)
+    full_Y = torch.load(y_file)
+    gc.collect()
 
-                data_ids.extend(ids)
-                target_ids.extend(curr_targets)
-        
-        # CRITICAL OPTIMIZATION: Convert to numpy uint16 (2 bytes per int vs 28 bytes)
-        # Assuming vocab_size < 65535. If larger, use int32.
-        self.data = np.array(data_ids, dtype=np.uint16)
-        gc.collect()
-        # For targets, we need signed int because of -100. int16 supports -32768 to 32767.
-        self.targets = np.array(target_ids, dtype=np.int16)
-        
-        # Free memory explicitly
-        del data_ids
-        del target_ids
-        
-        self.block_size = block_size
-        print(f"Loaded {len(self.data):,} tokens. RAM Optimized.")
+    print("Corpus shapes:", full_X.shape, full_Y.shape)
+    print("X min/max:", full_X.min().item(), full_X.max().item())
+    print("Any negative in X?", (full_X < 0).any().item())
+    print("Tokens >= vocab_size?", (full_X >= len(stoi)).any().item())  # safety check
+    
+    # Optional: simple train/val split by position (temporal-ish, avoids shuffle leakage)
+    split_idx = int(0.9 * len(full_X))
+    X_train, Y_train = full_X[:split_idx], full_Y[:split_idx]
+    X_val,   Y_val   = full_X[split_idx:],  full_Y[split_idx:]
+    
+    del full_X, full_Y
+    gc.collect()
+    
+    print(f"Train tokens: {len(X_train):,}, Val tokens: {len(X_val):,}")
+    return X_train, Y_train, X_val, Y_val
 
-    def __len__(self):
-        return max(0, len(self.data) - self.block_size)
-
-    def __getitem__(self, idx):
-        # Numpy slicing is fast
-        chunk_x = self.data[idx : idx + self.block_size + 1]
-        chunk_y = self.targets[idx : idx + self.block_size + 1]
-        
-        # Convert to tensor at the last moment
-        x = torch.from_numpy(chunk_x[:-1].astype(np.int64))
-        y = torch.from_numpy(chunk_y[1:].astype(np.int64))
-        
-        return x, y
-
-# Instantiate
-train_dataset = ChessDataset("input.txt", "vocab.pkl", block_size)
-
-# num_workers > 0 on Mac/MPS can sometimes cause issues, but on Kaggle/Linux 4 is fine.
-# persistent_workers=True helps speed up epoch transitions.
-train_loader = DataLoader(
-    train_dataset, 
-    batch_size=batch_size, 
-    shuffle=True, 
-    drop_last=True, 
-    num_workers=2, 
-    pin_memory=True,
-    persistent_workers=True 
-)
+X_train, Y_train, X_val, Y_val = load_and_split(x_file = "full_X.pt", y_file = "full_Y.pt")
+X_train_weak, Y_train_weak, X_val_weak, Y_val_weak  = load_and_split(x_file = "weak_X.pt", y_file = "weak_Y.pt")
+X_train_elite, Y_train_elite, X_val_elite, Y_val_elite = load_and_split(x_file = "elite_X.pt", y_file = "elite_Y.pt")
 
 
+def get_batch(split):
+    if split == 'train':
+        data_x, data_y = X_train, Y_train
+        elite_x, elite_y = X_train_elite, Y_train_elite
+        weak_x,  weak_y  = X_train_weak,  Y_train_weak
+    else:
+        data_x, data_y = X_val, Y_val
+        elite_x, elite_y = X_val_elite, Y_val_elite
+        weak_x,  weak_y  = X_val_weak,  Y_val_weak
 
-# ------------------- MODEL & OPTIMIZER -------------------
-model = ChessFormer(
-    vocab_size=train_dataset.vocab_size,
-    n_embd=n_embd,
-    block_size=block_size,
-    n_head=n_head,
-    n_layer=n_layer,
-    dropout=dropout,
-    device=device
-).to(device)
+    n_normal = 445
+    n_elite  = 25
+    n_weak   = 5
 
-# Enable Flash Attention optimization hints
-torch.set_float32_matmul_precision('high') 
+    ix  = torch.randint(0, len(data_x)  - block_size + 1, (n_normal,))
+    ixe = torch.randint(0, len(elite_x) - block_size + 1, (n_elite,))
+    ixw = torch.randint(0, len(weak_x)  - block_size + 1, (n_weak,))
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-scaler = torch.amp.GradScaler(enabled=use_amp)
+    xb  = torch.stack([data_x[i:i+block_size]  for i in ix])
+    yb  = torch.stack([data_y[i:i+block_size]  for i in ix])
 
-# ------------------- CHECKPOINTING & RESUME -------------------
-checkpoint_dir = "checkpoints"
-os.makedirs(checkpoint_dir, exist_ok=True)
-latest_ckpt = None
+    xbe = torch.stack([elite_x[i:i+block_size] for i in ixe])
+    ybe = torch.stack([elite_y[i:i+block_size] for i in ixe])
 
-ckpts = glob.glob(os.path.join(checkpoint_dir, "ckpt_*.pt"))
-if ckpts:
-    latest_ckpt = max(ckpts, key=os.path.getctime)
-    print(f"Found latest checkpoint: {latest_ckpt}")
-    checkpoint = torch.load(latest_ckpt, map_location=device)
-    model.load_state_dict(checkpoint['model'])
-    optimizer.load_state_dict(checkpoint['optimizer'])
-    scaler.load_state_dict(checkpoint['scaler'])
-    iter_num = checkpoint['iter_num'] + 1
-    print(f"Resuming from iteration {iter_num}")
-else:
-    iter_num = 0
-    print("No checkpoint found — starting from scratch")
+    xbw = torch.stack([weak_x[i:i+block_size]  for i in ixw])
+    ybw = torch.stack([weak_y[i:i+block_size]  for i in ixw])
 
-# ------------------- LR SCHEDULER -------------------
+    x = torch.cat([xb, xbe, xbw], dim=0)
+    y = torch.cat([yb, ybe, ybw], dim=0)
+
+    x = x.to(device, dtype=torch.long, non_blocking=True)
+    y = y.to(device, dtype=torch.long, non_blocking=True)
+
+    return x, y
+
+# ──────────────────────────────────────────────────────────────
+# Loss estimation (unchanged)
+# ──────────────────────────────────────────────────────────────
+@torch.no_grad()
+def estimate_loss(model):
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            Xb, Yb = get_batch(split)
+            with autocast(device_type='cuda'):
+                _, loss = model(Xb, Yb)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
+
+# LR schedule (unchanged)
 def get_lr(it):
     if it < warmup_iters:
         return learning_rate * (it + 1) / warmup_iters
@@ -183,99 +137,95 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (learning_rate - min_lr)
 
-# ------------------- EVALUATION -------------------
-@torch.no_grad()
-def estimate_loss():
-    model.eval()
-    losses = torch.zeros(50)
-    # Very important: dataloaders are stateful. 
-    # To avoid messing up the main iterator, we create a temporary one for eval 
-    # or just take a few batches if we don't care about precise order.
-    # Simpler: just loop the loader.
-    eval_iter = iter(train_loader)
-    for k in range(50):
+# ──────────────────────────────────────────────────────────────
+# Main Training Loop with Gradient Accumulation
+# ──────────────────────────────────────────────────────────────
+def main():
+    torch.set_float32_matmul_precision('high') 
+    model = PolicyHead(vocab_size, n_embd, block_size, n_head, n_layer, dropout, device)
+    model = torch.compile(model, mode="default", dynamic=True)
+    model = model.to(device)
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
+    iter_num = 0
+    best_val_loss = 1e9
+
+    if os.path.exists(checkpoint_path):
+        print(f"Resuming from {checkpoint_path}...")
         try:
-            x, y = next(eval_iter)
-        except StopIteration:
-            eval_iter = iter(train_loader)
-            x, y = next(eval_iter)
-            
-        x, y = x.to(device), y.to(device)
-        with torch.amp.autocast(device_type='cuda', enabled=use_amp):
-            _, loss = model(x, y)
-        losses[k] = loss.item()
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint['model'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            scaler.load_state_dict(checkpoint['scaler'])
+            iter_num = checkpoint['iter_num']
+            best_val_loss = checkpoint.get('best_val_loss', 1e9)
+            print(f"Loaded at iter {iter_num}, best val loss {best_val_loss:.4f}")
+        except Exception as e:
+            print(f"Checkpoint load failed: {e}. Starting fresh.")
+
+    print(f"Device: {device}")
+    print(f"Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+    print(f"Effective batch size: {batch_size * grad_accum}")
+
     model.train()
-    return losses.mean()
+    target_end_iter = min(max_iters, iter_num + run_iters)
 
-# ------------------- TRAINING LOOP -------------------
-print(f"Starting training... ({len(train_loader)} batches/epoch)")
-print(f"Model has {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters")
+    accum_loss = 0.0   # for printing averaged loss
 
-best_loss = float('inf')
-pbar = tqdm(range(iter_num, max_iters), initial=iter_num, total=max_iters, desc="Training")
+    pbar = tqdm(total=target_end_iter - iter_num, desc="Training", unit="iter", dynamic_ncols=True)
 
-train_iter = iter(train_loader)
+    while iter_num < target_end_iter:
+        lr = get_lr(iter_num)
+        for g in optimizer.param_groups:
+            g['lr'] = lr
 
-# Accumulation Loop
-optimizer.zero_grad(set_to_none=True)
+        if iter_num > 0 and (iter_num % eval_interval == 0):
+            losses = estimate_loss(model)
+            print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {lr:.2e}")
+            if losses['val'] < best_val_loss:
+                best_val_loss = losses['val']
 
-for iter_num in pbar:
-    lr = get_lr(iter_num)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-    accum_loss = 0
+        # Step optimizer every grad_accum micro-steps
+        for i in range(grad_accum):
+            xb, yb = get_batch('train')
+            torch.cuda.empty_cache()  # helps avoid fragmentation
     
-    # Gradient Accumulation Micro-Steps
-    for micro_step in range(gradient_accumulation_steps):
-        try:
-            x, y = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            x, y = next(train_iter)
+            with autocast(device_type='cuda'):
+                _, loss = model(xb, yb)
+                loss = loss / grad_accum   # scale for accumulation
+    
+            scaler.scale(loss).backward()
+            accum_loss += loss.item()
             
-        x, y = x.to(device), y.to(device)
-        
-        # Context manager for mixed precision
-        with torch.amp.autocast(device_type='cuda', enabled=use_amp) if device=='cuda' else torch.no_grad():
-            # If using MPS, autocast is not yet fully supported for all ops, 
-            # but we left 'use_amp' False for MPS in the setup block.
-            logits, loss = model(x, y)
-            loss = loss / gradient_accumulation_steps # Scale loss
-        
-        accum_loss += loss.item()
-        
-        # Backward
-        scaler.scale(loss).backward()
-    
-    # Step
-    scaler.unscale_(optimizer)
-    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    scaler.step(optimizer)
-    scaler.update()
-    optimizer.zero_grad(set_to_none=True)
+                      
+        scaler.unscale_(optimizer)                  # required before clipping with AMP
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
 
-    # Logging
-    if iter_num % 10 == 0:
-        pbar.set_description(f"Iter {iter_num} | Loss {accum_loss:.4f} | LR {lr:.2e}")
+        # Print averaged loss over accumulation steps
+        print(f"step {iter_num}: train loss {accum_loss:.4f}, lr {lr:.2e}")
+        accum_loss = 0.0      
+        
+        iter_num += 1
+        pbar.update(1)
 
-    # Save & Eval
-    if (iter_num + 1) % save_interval == 0:
-        checkpoint = {
-            'iter_num': iter_num,
-            'model': model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'scaler': scaler.state_dict(),
-            'loss': accum_loss
-        }
-        torch.save(checkpoint, f"chessformer_ckpt_{iter_num}.pt")
-    
-    if (iter_num + 1) % eval_interval == 0:
-        val_loss = estimate_loss()
-        print(f"\nStep {iter_num}: Train Loss {accum_loss:.4f}, Val Loss {val_loss:.4f}")
-        if val_loss < best_loss:
-            best_loss = val_loss
-            torch.save(model.state_dict(), "best_model.pt")
+    pbar.close()
 
-torch.save(model.state_dict(), "final_model.pt")
-print("Training complete!")
+    # Final save
+    checkpoint = {
+        'model': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'iter_num': iter_num,
+        'best_val_loss': best_val_loss,
+        'scaler': scaler.state_dict(),
+    }
+    torch.save(checkpoint, "ultra_3o9.pt")
+    losses = estimate_loss(model)
+    print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    print(f"Finished at iter {iter_num}. Saved.")
+
+if __name__ == "__main__":
+    main()

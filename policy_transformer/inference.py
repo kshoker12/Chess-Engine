@@ -13,15 +13,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model import PolicyHead
 
 # --- Configuration ---
-CHECKPOINT_PATH = os.path.join(os.path.dirname(__file__), "mega_ultra_3o3.pt")
+CHECKPOINT_PATH = os.path.join(os.path.dirname(__file__), "ultra_3o9.pt")
 VOCAB_PATH = os.path.join(os.path.dirname(__file__), "vocab.pkl")
 
 # Hyperparameters (Must match training)
-# Hyperparameters (Must match training)
-N_EMBD = 768
-N_HEAD = 12
-N_LAYER = 10
-BLOCK_SIZE = 256
+N_EMBD = 500
+N_HEAD = 10
+N_LAYER = 8
+BLOCK_SIZE = 128
 DROPOUT = 0.0 # No dropout during inference
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 if DEVICE == 'cpu' and torch.backends.mps.is_available():
@@ -62,9 +61,13 @@ def load_resources():
     checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
     # Handle if checkpoint is wrapped in dict (e.g. {'model': ...}) or just state_dict
     if isinstance(checkpoint, dict) and 'model' in checkpoint:
-        _model.load_state_dict(checkpoint['model'])
+        state_dict = checkpoint['model']
     else:
-        _model.load_state_dict(checkpoint)
+        state_dict = checkpoint
+    # Strip _orig_mod. prefix if checkpoint was saved from torch.compile() model
+    if isinstance(state_dict, dict) and any(k.startswith('_orig_mod.') for k in state_dict):
+        state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+    _model.load_state_dict(state_dict)
         
     _model.to(DEVICE)
     _model.eval()
@@ -89,7 +92,7 @@ def get_token(uci_str):
 
 # --- Main Inference Function ---
 def predict_next_move(pgn_string, top_k = 9):
-    print("Utilizing Transformer for move prediction")
+    # print("Utilizing Transformer for move prediction")
     """
     Takes a PGN string (e.g. "1. e4 e5 ..."), 
     parses it, handles parity (mirroring if Black to move),

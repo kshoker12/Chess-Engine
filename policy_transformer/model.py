@@ -1,6 +1,22 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import math
+
+
+def _apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """
+    Apply rotary position embedding to a tensor shaped [B, n_head, T, head_dim].
+    cos/sin are shaped [T, head_dim//2] (broadcasted inside).
+    """
+    # x: [..., head_dim] where head_dim is even
+    x_even = x[..., ::2]
+    x_odd = x[..., 1::2]
+    cos = cos[None, None, :, :]
+    sin = sin[None, None, :, :]
+    out_even = x_even * cos - x_odd * sin
+    out_odd = x_even * sin + x_odd * cos
+    return torch.stack((out_even, out_odd), dim=-1).flatten(-2)
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, n_embd, n_head, block_size, dropout):
@@ -15,12 +31,46 @@ class CausalSelfAttention(nn.Module):
         self.n_head = n_head
         self.n_embd = n_embd
         self.dropout = dropout
+        head_dim = n_embd // n_head
+        assert head_dim % 2 == 0, "RoPE requires an even head dimension"
+
+        # RoPE (rotary position embeddings) cache (non-persistent so old checkpoints still load)
+        inv_freq = 1.0 / (10000.0 ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
+        self.register_buffer("_rope_inv_freq", inv_freq, persistent=False)
+        self.register_buffer("_rope_cos_cached", torch.empty(0), persistent=False)
+        self.register_buffer("_rope_sin_cached", torch.empty(0), persistent=False)
+        self._rope_seq_len_cached = 0
+        self._rope_cache_dtype = None
+        self._rope_cache_device = None
+
         # Flash Attention requires PyTorch 2.0+
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
             print("WARNING: Flash Attention not available. Using slow manual attention.")
             self.register_buffer("bias", torch.tril(torch.ones(block_size, block_size))
                                         .view(1, 1, block_size, block_size))
+
+    def _rope_cos_sin(self, seq_len: int, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+        # Cache per (device, dtype, seq_len>=T). Compute in fp32 for stability, cast for use.
+        if (
+            self._rope_seq_len_cached >= seq_len
+            and self._rope_cache_device == device
+            and self._rope_cache_dtype == dtype
+            and self._rope_cos_cached.numel() != 0
+        ):
+            return self._rope_cos_cached[:seq_len], self._rope_sin_cached[:seq_len]
+
+        t = torch.arange(seq_len, device=device, dtype=torch.float32)
+        freqs = torch.outer(t, self._rope_inv_freq.to(device=device))  # [T, head_dim//2]
+        cos = freqs.cos().to(dtype=dtype)
+        sin = freqs.sin().to(dtype=dtype)
+
+        self._rope_cos_cached = cos
+        self._rope_sin_cached = sin
+        self._rope_seq_len_cached = seq_len
+        self._rope_cache_device = device
+        self._rope_cache_dtype = dtype
+        return cos, sin
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -30,6 +80,11 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        # RoPE: apply rotary embeddings to q/k (not v)
+        cos, sin = self._rope_cos_sin(T, device=q.device, dtype=q.dtype)
+        q = _apply_rope(q, cos, sin)
+        k = _apply_rope(k, cos, sin)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -106,8 +161,8 @@ class PolicyHead(nn.Module):
                 targets = targets[:, -self.block_size:]
 
         tok_emb = self.token_embedding_table(idx) 
-        pos_emb = self.position_embedding_table(torch.arange(T, device=self.device))
-        x = tok_emb + pos_emb
+        # With RoPE applied inside attention, we don't add absolute positional embeddings here.
+        x = tok_emb
         x = self.blocks(x)
         x = self.ln_f(x)
 

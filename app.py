@@ -23,9 +23,9 @@ def get_engine():
 
 # Initialize Agents
 print("Loading Agent 0...")
-Agent0 = ChessEvaluator('value_transformer/mini_value_4o1.pt')
+Agent0 = ChessEvaluator('value_transformer/mini_value_6o4.pt')
 print("Loading Agent 1...")
-Agent1 = ChessEvaluator('value_transformer/checkpoints/mini_value_3o9.pt')
+Agent1 = ChessEvaluator('value_transformer/mini_value_6o4.pt')
 
 # Default to Agent0 for backward compatibility if needed, though we will select explicitly
 ValueTransformer = Agent0 
@@ -289,18 +289,8 @@ def get_transformer_move(req: TransformerMoveRequest):
                      opp_score = 0.0 # Stalemate/Draw
             else:
                 opp_score = -opp_score 
-            
-            # if opponent_move:
-            #     board.push_uci(opponent_move)
-
-            # view = board
-            # if board.turn == chess.BLACK:
-            #     view = board.transform(chess.flip_vertical)
-            
-            # cp_score = ValueTransformer.evaluate(view.fen())
-            # cp_score = 0.0
         
-            lam = random.uniform(0, 0.05)
+            lam = random.uniform(0, 0.1)
             combined_score = (1- lam) * opp_score + lam * prob 
         
             if combined_score > best_score:
@@ -313,16 +303,6 @@ def get_transformer_move(req: TransformerMoveRequest):
                 "val": opp_score,
                 "score": combined_score
             })
-        
-        # if logs and all(abs(log['val']) >= 0.98 for log in logs):
-        #     print("All moves have extreme values >= 0.98. Relying on policy.")
-        #     for log in logs:
-        #         log['score'] = log['prob']
-            
-        #     # Update best move since we changed scores
-        #     best_log = max(logs, key=lambda x: x['score'])
-        #     best_move = best_log['move']
-        #     best_score = best_log['score']
 
         logs.sort(key=lambda x: x["score"], reverse=True)
     
@@ -343,7 +323,7 @@ def get_transformer_move(req: TransformerMoveRequest):
 
 class MCTSEvalRequest(BaseModel):
     pgn: str
-    simulations: int = 800
+    simulations: int = 400
     agent: int = 0
 
 class MCTSEvalResponse(BaseModel):
@@ -401,7 +381,7 @@ def mcts_3(req: MCTSEvalRequest):
         from engine.mcts import MCTS
         
         print('evaluating mcts-3')
-        searcher = MCTS(req.pgn, value_func=Agent0.batch_evaluate, policy_func=predict_next_move)
+        searcher = MCTS(req.pgn, value_func=Agent0.batch_evaluate, policy_func=predict_next_move, num_simulations=req.simulations)
         best_move, score = searcher.search()
         
         return {

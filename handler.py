@@ -14,7 +14,7 @@ from value_transformer.approximate import approximate_cp
 # Warm-start: Load model at module level
 print("Loading Agent 0 (4o1 model)...")
 try:
-    Agent0 = ChessEvaluator('value_transformer/mini_value_4o1.pt')
+    Agent0 = ChessEvaluator('value_transformer/mini_value_6o4.pt')
     print("Model loaded successfully")
 except Exception as e:
     print(f"Error loading model: {e}")

@@ -1,4 +1,5 @@
 import chess
+import chess.pgn
 import io
 
 '''
@@ -19,6 +20,31 @@ class AlphaBeta:
         self.global_expansion = 0
         self.global_eval = 0
 
+        # Draw-avoidance: cache root FEN and last few (state, action) pairs
+        self.root_fen, self.recent_pairs = self._extract_recent_state_action_pairs(pgn)
+
+    def _extract_recent_state_action_pairs(self, pgn, max_pairs: int = 4):
+        try:
+            pgn_io = io.StringIO(pgn)
+            game = chess.pgn.read_game(pgn_io)
+        except Exception:
+            game = None
+
+        if game is None:
+            board = chess.Board()
+            return board.fen(), []
+
+        board = game.board()
+        recent = []
+        for move in game.mainline_moves():
+            fen_before = board.fen()
+            recent.append((fen_before, move.uci()))
+            board.push(move)
+
+        root_fen = board.fen()
+        recent_pairs = recent[-max_pairs:] if len(recent) > max_pairs else recent
+        return root_fen, recent_pairs
+
     def _init_root(self, pgn):
         pgn_io = io.StringIO(pgn)
         game = chess.pgn.read_game(pgn_io)
@@ -38,6 +64,9 @@ class AlphaBeta:
             temp_board.push_uci(move)
             value = self._alpha_beta(temp_board, self.max_depth - 1, -float('inf'), float('inf'))
             if self.root.turn == chess.BLACK: value = -value
+            if (self.root_fen, move) in self.recent_pairs:
+                value *= 0.95
+
             if value > best_score:
                 best_score = value
                 best_move = move
