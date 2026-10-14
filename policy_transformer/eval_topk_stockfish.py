@@ -152,22 +152,22 @@ def label_positions(positions, stockfish_path, time_limit, workers):
     return [p for p in labelled if p]
 
 
-def load_or_build_positions():
-    if os.path.exists(CACHE_PATH):
-        with open(CACHE_PATH) as f:
+def load_or_build_positions(pgn_path=PGN_PATH, cache_path=CACHE_PATH, n=N_SAMPLES, seed=SEED):
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
             data = [json.loads(line) for line in f]
-        print(f"Loaded {len(data):,} cached labelled positions from {CACHE_PATH}")
+        print(f"Loaded {len(data):,} cached labelled positions from {cache_path}")
         return data
 
-    # Over-sample slightly so dropped (finished) positions still leave N_SAMPLES.
-    raw = sample_positions(PGN_PATH, N_SAMPLES + 200, SEED)
+    # Over-sample slightly so dropped (finished) positions still leave n.
+    raw = sample_positions(pgn_path, n + 200, seed)
     positions = label_positions(raw, find_stockfish(), STOCKFISH_TIME, STOCKFISH_WORKERS)
-    assert len(positions) >= N_SAMPLES, f"only {len(positions)} labelled positions"
-    positions = positions[:N_SAMPLES]
-    with open(CACHE_PATH, "w") as f:
+    assert len(positions) >= n, f"only {len(positions)} labelled positions"
+    positions = positions[:n]
+    with open(cache_path, "w") as f:
         for p in positions:
             f.write(json.dumps(p) + "\n")
-    print(f"Cached {len(positions):,} labelled positions to {CACHE_PATH}")
+    print(f"Cached {len(positions):,} labelled positions to {cache_path}")
     return positions
 
 
@@ -199,9 +199,10 @@ def load_model(name, device):
 
 
 @torch.no_grad()
-def ranked_legal_moves(model, stoi, device, moves, board):
-    """Legal moves ranked by logit. History is mirrored when Black is to move
-    (the models only ever see White-to-move), same convention as inference.py."""
+def legal_move_logits(model, stoi, device, moves, board):
+    """(legal UCI moves, their logits). History is mirrored when Black is to move
+    (the models only ever see White-to-move), same convention as inference.py.
+    A legal move missing from the vocab gets -inf."""
     mirror = board.turn == chess.BLACK
     pad = stoi.get("|", 0)
     ids = []
@@ -212,13 +213,20 @@ def ranked_legal_moves(model, stoi, device, moves, board):
     logits, _ = model(idx)
     last = logits[0, -1, :].float().cpu()
 
-    scored = []
+    ucis, scores = [], []
     for m in board.legal_moves:
         u = m.uci()
         tok = get_token(mirror_uci_string(u) if mirror else u)
-        scored.append((last[stoi[tok]].item() if tok in stoi else float("-inf"), u))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [u for _, u in scored]
+        ucis.append(u)
+        scores.append(last[stoi[tok]].item() if tok in stoi else float("-inf"))
+    return ucis, scores
+
+
+def ranked_legal_moves(model, stoi, device, moves, board):
+    """Legal moves ranked by logit, best first."""
+    ucis, scores = legal_move_logits(model, stoi, device, moves, board)
+    order = sorted(range(len(ucis)), key=lambda i: scores[i], reverse=True)
+    return [ucis[i] for i in order]
 
 
 def evaluate(names, positions):
