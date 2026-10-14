@@ -375,10 +375,15 @@ def play_game(line, white, black):
                 book_plies=n_book, per_engine=per_engine, pgn=str(pgn), adjudicated=not over)
 
 
-def run_matchup(name, prod, side, openings, prod_sims):
+def run_matchup(name, prod, side, openings, prod_sims, deadline=None):
+    """Plays every opening with both colours. With a deadline (time.time()), no new opening is
+    started after it, so the games played always come in complete colour pairs."""
     games = []
     bar = tqdm(total=2 * len(openings), desc=name)
     for line in openings:
+        if deadline is not None and time.time() > deadline:
+            print(f"  time budget reached: stopping {name} after {len(games)} games")
+            break
         for white, black in ((side, prod), (prod, side)):
             g = play_game(line, white, black)
             games.append(g)
@@ -408,6 +413,9 @@ def report(results, prod_sims):
     rng = np.random.default_rng(0)
     summary = {}
     for name, (side_sims, games) in results.items():
+        if not games:
+            print(f"\n=== {name}: no games finished ===")
+            continue
         sc = np.array([score_for(g, "sidekick") for g in games])
         w, d, l = int((sc == 1).sum()), int((sc == 0.5).sum()), int((sc == 0).sum())
         pair = np.array([sc[i:i + 2].mean() for i in range(0, len(sc), 2)])   # one value per opening
@@ -435,7 +443,7 @@ def report(results, prod_sims):
     print(f"\nSaved h2h_summary.json, h2h_<matchup>.json and h2h_<matchup>.pgn to {OUT_DIR}")
 
 
-def main():
+def main(argv=None):
     global MAX_PLIES
     ap = argparse.ArgumentParser()
     ap.add_argument("--openings", type=int, default=len(BOOK), help="book lines to use (each is played with both colours)")
@@ -443,9 +451,13 @@ def main():
     ap.add_argument("--matchups", choices=["equal_time", "equal_sims", "both"], default="both")
     ap.add_argument("--prod-sims", type=int, default=PROD_SIMS, help="production simulations (default 400)")
     ap.add_argument("--max-plies", type=int, default=MAX_PLIES)
-    args = ap.parse_args()
+    ap.add_argument("--time-budget-hours", type=float, default=None,
+                    help="stop starting new openings once this much total time has passed "
+                         "(shared fairly between the matchups; for session limits)")
+    args = ap.parse_args(argv)
 
     MAX_PLIES = args.max_plies
+    t_start = time.time()
     openings = [""] if args.start_only else BOOK[:args.openings]
     for line in openings:
         opening_board(line)    # fails loudly if a line is illegal
@@ -476,11 +488,14 @@ def main():
         print(f"  rough estimate per matchup: {est_h:.1f} h (80-ply games, prod's {t_prod:.2f} s/move for both sides)")
 
     results = {}
-    for name, s in matchups.items():
+    hard_stop = None if args.time_budget_hours is None else t_start + args.time_budget_hours * 3600
+    for i, (name, s) in enumerate(matchups.items()):
         side_sims = equal_time_sims if s == "auto" else int(s)
         print(f"\n=== {name}: sidekick @ {side_sims} sims vs prod @ {args.prod_sims} sims ===")
         side = Engine("sidekick", side_sims, base_policy, side_policy, value_fn)
-        results[name] = (side_sims, run_matchup(name, prod, side, openings, args.prod_sims))
+        # each matchup gets an equal share of whatever time is left
+        deadline = None if hard_stop is None else time.time() + (hard_stop - time.time()) / (len(matchups) - i)
+        results[name] = (side_sims, run_matchup(name, prod, side, openings, args.prod_sims, deadline))
 
     report(results, args.prod_sims)
 
