@@ -94,3 +94,6 @@ Note: `app.py` also contains additional code paths, but the routes above are the
 The repo also includes training and analysis code under:
 - `policy_transformer/train.py` and related scripts
 - `value_transformer/train.py` and related scripts/
+
+docker build --platform linux/amd64 -t kshoker/chess-ai-runpod:latest1 .
+docker push kshoker/chess-ai-runpod:latest1

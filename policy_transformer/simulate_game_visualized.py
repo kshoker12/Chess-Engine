@@ -39,21 +39,26 @@ def _device():
     return device
 
 
-def _load_vocab():
-    vocab_path = os.path.join(ROOT, "policy_transformer", "vocab.pkl")
+def _load_vocab(vocab_path: str):
+    vocab_path = os.path.join(ROOT, "policy_transformer", vocab_path)
     with open(vocab_path, "rb") as f:
         stoi = pickle.load(f)
     return stoi
 
 
+def checkpoint_uses_vocab1(checkpoint_path: str) -> bool:
+    """ultra_o2 (and similar) checkpoints were trained with vocab1.pkl (1793 tokens)."""
+    return "o2" in os.path.basename(checkpoint_path).lower()
+
+
 def _load_policy_model(checkpoint_path: str, vocab_size: int, device: str):
-    if "mega" in os.path.basename(checkpoint_path).lower():
+    if checkpoint_uses_vocab1(checkpoint_path):
         model = PolicyHead(
             vocab_size=vocab_size,
-            n_embd=768,
-            block_size=256,
-            n_head=12,
-            n_layer=10,
+            n_embd=360,
+            block_size=64,
+            n_head=10,
+            n_layer=18,
             dropout=0.0,
             device=device,
         )
@@ -176,7 +181,18 @@ def _svg_with_legend(svg_str: str, white_name: str, black_name: str) -> str:
     return svg_str
 
 
-def play_game(white_model, black_model, stoi, device, move_delay_sec=0, viz_path=None, white_name="A", black_name="B"):
+def play_game(
+    white_model,
+    black_model,
+    vocab_white: dict,
+    vocab_black: dict,
+    device,
+    move_delay_sec=0,
+    viz_path=None,
+    white_name="A",
+    black_name="B",
+):
+    """Each side uses the vocabulary that matches its checkpoint (vocab.pkl vs vocab1.pkl for o2)."""
     board = chess.Board()
     moves_uci = []
 
@@ -185,6 +201,8 @@ def play_game(white_model, black_model, stoi, device, move_delay_sec=0, viz_path
             break
 
         model = white_model if board.turn == chess.WHITE else black_model
+        stoi = vocab_white if board.turn == chess.WHITE else vocab_black
+
         move_uci = choose_move(board, moves_uci, model, stoi, device)
         if move_uci is None:
             break
@@ -207,7 +225,7 @@ def play_game(white_model, black_model, stoi, device, move_delay_sec=0, viz_path
 
 def main():
     default_a = os.path.join(ROOT, "policy_transformer", "ultra_3o9.pt")
-    default_b = os.path.join(ROOT, "policy_transformer", "checkpoints", "mega_ultra_3o3.pt")
+    default_b = os.path.join(ROOT, "policy_transformer", "checkpoints", "ultra_o2.pt")
 
     path_a = sys.argv[1] if len(sys.argv) > 1 else default_a
     path_b = sys.argv[2] if len(sys.argv) > 2 else default_b
@@ -224,9 +242,13 @@ def main():
     print(f"Board: {VIZ_OUTPUT_PATH}")
     print(f"Playing {num_games} games (random white/black each game)...")
 
-    stoi = _load_vocab()
-    model_a = _load_policy_model(path_a, len(stoi), device)
-    model_b = _load_policy_model(path_b, len(stoi), device)
+    stoi = _load_vocab("vocab.pkl")
+    stoi_o2 = _load_vocab("vocab1.pkl")
+
+    vocab_a = stoi_o2 if checkpoint_uses_vocab1(path_a) else stoi
+    vocab_b = stoi_o2 if checkpoint_uses_vocab1(path_b) else stoi
+    model_a = _load_policy_model(path_a, len(vocab_a), device)
+    model_b = _load_policy_model(path_b, len(vocab_b), device)
 
     wins_a = 0
     wins_b = 0
@@ -235,13 +257,19 @@ def main():
     for g in range(num_games):
         if random.random() < 0.5:
             white_model, black_model = model_a, model_b
+            vocab_white, vocab_black = vocab_a, vocab_b
             white_name, black_name = "A", "B"
         else:
             white_model, black_model = model_b, model_a
+            vocab_white, vocab_black = vocab_b, vocab_a
             white_name, black_name = "B", "A"
 
         result = play_game(
-            white_model, black_model, stoi, device,
+            white_model,
+            black_model,
+            vocab_white,
+            vocab_black,
+            device,
             move_delay_sec=MOVE_DELAY_SECONDS,
             viz_path=VIZ_OUTPUT_PATH,
             white_name=white_name,

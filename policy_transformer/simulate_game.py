@@ -36,15 +36,30 @@ def _device():
     return device
 
 
-def _load_vocab():
-    vocab_path = os.path.join(ROOT, "policy_transformer", "vocab.pkl")
+def _load_vocab(vocab_filename: str):
+    vocab_path = os.path.join(ROOT, "policy_transformer", vocab_filename)
     with open(vocab_path, "rb") as f:
         stoi = pickle.load(f)
     return stoi
 
 
+def checkpoint_uses_vocab1(checkpoint_path: str) -> bool:
+    """ultra_o2 (and similar) checkpoints were trained with vocab1.pkl."""
+    return "o2" in os.path.basename(checkpoint_path).lower()
+
+
 def _load_policy_model(checkpoint_path: str, vocab_size: int, device: str):
-    if "2o5" in os.path.basename(checkpoint_path).lower():
+    if checkpoint_uses_vocab1(checkpoint_path):
+        model = PolicyHead(
+            vocab_size=vocab_size,
+            n_embd=360,
+            block_size=64,
+            n_head=10,
+            n_layer=18,
+            dropout=0.0,
+            device=device,
+        )
+    elif "2o5" in os.path.basename(checkpoint_path).lower():
         model = PolicyHead(
             vocab_size=vocab_size,
             n_embd=500,
@@ -158,7 +173,7 @@ def choose_move(board, moves_uci, policy_model, stoi, device):
     return best_move
 
 
-def play_game(white_model, black_model, stoi, device):
+def play_game(white_model, black_model, vocab_white, vocab_black, device):
     board = chess.Board()
     moves_uci = []
 
@@ -167,6 +182,7 @@ def play_game(white_model, black_model, stoi, device):
             break
 
         model = white_model if board.turn == chess.WHITE else black_model
+        stoi = vocab_white if board.turn == chess.WHITE else vocab_black
         move_uci = choose_move(board, moves_uci, model, stoi, device)
         if move_uci is None:
             break
@@ -180,11 +196,11 @@ def play_game(white_model, black_model, stoi, device):
 
 def main():
     default_a = os.path.join(ROOT, "policy_transformer", "ultra_3o9.pt")
-    default_b = os.path.join(ROOT, "policy_transformer", "checkpoints", "mega_ultra_3o3.pt")
+    default_b = os.path.join(ROOT, "policy_transformer", "checkpoints", "ultra_o2.pt")
 
     path_a = sys.argv[1] if len(sys.argv) > 1 else default_a
     path_b = sys.argv[2] if len(sys.argv) > 2 else default_b
-    num_games = int(sys.argv[4]) if len(sys.argv) > 4 else NUM_GAMES
+    num_games = int(sys.argv[3]) if len(sys.argv) > 3 else NUM_GAMES
 
     if not os.path.exists(path_a) or not os.path.exists(path_b):
         print(f"Policy model not found. A: {path_a}, B: {path_b}")
@@ -196,9 +212,13 @@ def main():
     print(f"Device: {device}")
     print(f"Playing {num_games} games (random white/black each game)...")
 
-    stoi = _load_vocab()
-    model_a = _load_policy_model(path_a, len(stoi), device)
-    model_b = _load_policy_model(path_b, len(stoi), device)
+    stoi = _load_vocab("vocab.pkl")
+    stoi_o2 = _load_vocab("vocab1.pkl")
+
+    vocab_a = stoi_o2 if checkpoint_uses_vocab1(path_a) else stoi
+    vocab_b = stoi_o2 if checkpoint_uses_vocab1(path_b) else stoi
+    model_a = _load_policy_model(path_a, len(vocab_a), device)
+    model_b = _load_policy_model(path_b, len(vocab_b), device)
 
     wins_a = 0
     wins_b = 0
@@ -207,12 +227,14 @@ def main():
     for g in range(num_games):
         if random.random() < 0.5:
             white_model, black_model = model_a, model_b
+            vocab_white, vocab_black = vocab_a, vocab_b
             white_name, black_name = "A", "B"
         else:
             white_model, black_model = model_b, model_a
+            vocab_white, vocab_black = vocab_b, vocab_a
             white_name, black_name = "B", "A"
 
-        result = play_game(white_model, black_model, stoi, device)
+        result = play_game(white_model, black_model, vocab_white, vocab_black, device)
         if result == "1-0":
             wins_a += 1 if white_name == "A" else 0
             wins_b += 1 if white_name == "B" else 0

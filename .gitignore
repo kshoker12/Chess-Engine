@@ -34,3 +34,9 @@ data/
 # Model weights
 *.pt
 *.pth
+
+# Large generated exports (unified_mcts)
+unified_mcts/data_export/
+unified_mcts/shards/
+.DS_Store
+**/.DS_Store

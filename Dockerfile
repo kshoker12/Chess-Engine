@@ -67,3 +67,4 @@ EXPOSE 8000
 # Run the handler (RunPod expects this entrypoint)
 # Using -u for unbuffered output (important for RunPod logging)
 CMD ["python", "-u", "handler.py"]
+
