@@ -9,9 +9,11 @@ does model inference.
     python policy_transformer/eval_topk_stockfish.py                 # MODEL constant
     python policy_transformer/eval_topk_stockfish.py --model base
 
-Protocol: N_SAMPLES games are drawn at random from the PGN (one position per
-game, after a random ply k in [5, len-1]), the label is Stockfish's best move
-(time-limited), and a model's top-k is its ranking of the legal moves.
+Protocol (same as evaluate_accuracy.py / compare_models.py): games with at least 7
+plies, one position per game after a random ply k in [5, len-1] (evaluate_accuracy.py's
+rule), label = Stockfish best move at 0.1s, a model's top-k = its ranking of the legal
+moves by logit, history mirrored when Black is to move. Games are drawn at random from
+the whole PGN (as compare_models.py does) rather than read from the start.
 """
 import argparse
 import io
@@ -50,7 +52,10 @@ MODELS = {
         n_embd=256, n_head=8, n_layer=4,
     ),
 }
-BLOCK_SIZE = 128  # both models were trained with 128
+# Both models are built with block_size 128 (as in compare_models.py). PolicyHead clips any
+# longer history to its last 128 tokens, so evaluate_accuracy.py's 256-token truncation was
+# effectively 128 too.
+BLOCK_SIZE = 128
 
 # ── Evaluation data and protocol ──
 PGN_PATH = os.path.join(ROOT_DIR, "data", "eval_holdout", "lichess_elite_2025-02.pgn")
