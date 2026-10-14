@@ -1,13 +1,13 @@
 """
 Top-k agreement of a policy model with Stockfish on held-out positions.
 
-Pick the model with the MODEL constant ("base" or "sidekick"), or override it
-with --model. Both models are scored on the same positions: the sampled
-positions and Stockfish labels are cached in CACHE_PATH, so the second run only
-does model inference.
+Pick the model with the MODEL constant ("base", "sidekick" or "both"), or override
+it with --model. "both" scores the two models side by side in a single pass over the
+same positions. The sampled positions and Stockfish labels are cached in CACHE_PATH,
+so later runs only do model inference.
 
     python policy_transformer/eval_topk_stockfish.py                 # MODEL constant
-    python policy_transformer/eval_topk_stockfish.py --model base
+    python policy_transformer/eval_topk_stockfish.py --model base   # one model only
 
 Protocol (same as evaluate_accuracy.py / compare_models.py): games with at least 7
 plies, one position per game after a random ply k in [5, len-1] (evaluate_accuracy.py's
@@ -37,8 +37,8 @@ sys.path.insert(0, HERE)
 from model import PolicyHead
 from inference import mirror_uci_string, get_token
 
-# ── Which model to evaluate: "base" or "sidekick" ──
-MODEL = "sidekick"
+# ── Which model to evaluate: "base", "sidekick", or "both" (one pass, same positions) ──
+MODEL = "both"
 
 MODELS = {
     "base": dict(
@@ -221,32 +221,34 @@ def ranked_legal_moves(model, stoi, device, moves, board):
     return [u for _, u in scored]
 
 
-def evaluate(name, positions):
+def evaluate(names, positions):
     device = pick_device()
     print(f"Device: {device}")
-    model, stoi = load_model(name, device)
+    loaded = {n: load_model(n, device) for n in names}
 
-    hits = {k: 0 for k in KS}
+    hits = {n: {k: 0 for k in KS} for n in names}
     total = 0
-    pbar = tqdm(positions, desc=f"Evaluating {name}")
+    pbar = tqdm(positions, desc="Evaluating " + " + ".join(names))
     for pos in pbar:
         board = chess.Board()
         for u in pos["moves"]:
             board.push_uci(u)
-        ranked = ranked_legal_moves(model, stoi, device, pos["moves"], board)
-        for k in KS:
-            hits[k] += pos["best"] in ranked[:k]
+        for n, (model, stoi) in loaded.items():
+            ranked = ranked_legal_moves(model, stoi, device, pos["moves"], board)
+            for k in KS:
+                hits[n][k] += pos["best"] in ranked[:k]
         total += 1
-        pbar.set_postfix({f"Top-{k}": f"{hits[k] / total:.1%}" for k in (1, 7)})
+        pbar.set_postfix({f"{n}@1/7": f"{hits[n][1] / total:.1%}/{hits[n][7] / total:.1%}" for n in names})
 
-    print(f"\nResults for '{name}' ({total} positions, Stockfish {STOCKFISH_TIME}s best move):")
+    print(f"\nResults ({total} positions, Stockfish {STOCKFISH_TIME}s best move):")
+    print(f"  {'':8}" + "".join(f"{n:>22}" for n in names))
     for k in KS:
-        print(f"  Top-{k}: {hits[k]}/{total} ({100 * hits[k] / total:.2f}%)")
-    return {k: hits[k] / total for k in KS}
+        print(f"  Top-{k:<4}" + "".join(f"{hits[n][k]:>8}/{total} ({100 * hits[n][k] / total:6.2f}%)" for n in names))
+    return {n: {k: hits[n][k] / total for k in KS} for n in names}
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", choices=list(MODELS), default=MODEL)
+    ap.add_argument("--model", choices=[*MODELS, "both"], default=MODEL)
     args = ap.parse_args()
-    evaluate(args.model, load_or_build_positions())
+    evaluate(list(MODELS) if args.model == "both" else [args.model], load_or_build_positions())
