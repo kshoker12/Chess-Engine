@@ -385,10 +385,15 @@ def run_matchup(name, prod, side, openings, prod_sims, deadline=None):
             print(f"  time budget reached: stopping {name} after {len(games)} games")
             break
         for white, black in ((side, prod), (prod, side)):
+            t_game = time.time()
             g = play_game(line, white, black)
             games.append(g)
             bar.update(1)
             bar.set_postfix(last=f"{g['white']}-{g['black']} {g['result']}", plies=g["plies"])
+            pts = sum(score_for(x, "sidekick") for x in games)
+            tqdm.write(f"[{name}] game {len(games)}/{2 * len(openings)}  {g['white']} (W) vs {g['black']} (B)  "
+                       f"{line or 'start'}: {g['result']} in {g['plies']} plies, {(time.time() - t_game) / 60:.1f} min"
+                       f"  | sidekick {pts:g}/{len(games)}")
         with open(os.path.join(OUT_DIR, f"h2h_{name}.json"), "w") as f:
             json.dump(dict(name=name, side_sims=side.sims, prod_sims=prod_sims, games=games), f)
         with open(os.path.join(OUT_DIR, f"h2h_{name}.pgn"), "w") as f:
